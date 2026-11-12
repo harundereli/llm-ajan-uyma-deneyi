@@ -74,9 +74,12 @@ class DilModeliAjan:
 
     def mesaj_olustur(self, soru: str, onceki_cevaplar: list[tuple[str, str]]) -> str:
         """Katılımcıya gösterilecek metni hazırlar: soru, grubun cevapları ve cevap talebi."""
-        satirlar = [soru, "", "Diğer katılımcıların cevapları:"]
-        satirlar += [f"- {isim}: {cevap}" for isim, cevap in onceki_cevaplar]
-        satirlar += ["", "Senin cevabın nedir? Sadece harfi yaz (A, B veya C)."]
+        satirlar = [soru, ""]
+        if onceki_cevaplar:
+            satirlar.append("Diğer katılımcıların cevapları:")
+            satirlar += [f"- {isim}: {cevap}" for isim, cevap in onceki_cevaplar]
+            satirlar.append("")
+        satirlar.append("Senin cevabın nedir? Sadece harfi yaz (A, B veya C).")
         return "\n".join(satirlar)
 
     def cevap_ver(self, soru: str, onceki_cevaplar: list[tuple[str, str]]) -> str:

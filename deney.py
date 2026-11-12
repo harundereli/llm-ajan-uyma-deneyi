@@ -1,21 +1,30 @@
 """
 Asch uyma deneyi.
 
-Her denemede suç ortakları bilerek aynı yanlış cevabı verir, ardından gerçek katılımcı cevaplar.
+Her soru iki koşulda sorulur:
+- Kontrol koşulu: Katılımcı soruyu tek başına cevaplar (0 suç ortağı).
+- Grup koşulu:    Önce suç ortakları bilerek aynı yanlış cevabı verir, ardından katılımcı cevaplar.
+
 Katılımcının cevabı üç şekilde sınıflandırılır:
 - "uydu":     grubun yanlış cevabını verdi
 - "bagimsiz": doğru cevabı verdi
-- "diger":    ikisinden de farklı bir cevap verdi
+- "diger":    ikisinden de farklı bir cevap verdi (ya da cevap okunamadı)
+
+Kontrol koşulunda "uydu", katılımcının kendi başına o yanlış cevabı seçtiği anlamına gelir.
+İki koşulun karşılaştırılması, grubun etkisini gösterir.
 
 Her çalıştırmanın sonuçları sonuclar/ klasörüne tarih-saat adlı bir JSON dosyası olarak kaydedilir.
 """
 
 import json
+import os
+import re
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from ajanlar import DilModeliAjan, SabitAjan
+from ajanlar import DilModeliAjan, SabitAjan, gemini_model
 
 SONUC_KLASORU = Path("sonuclar")
 
@@ -36,12 +45,18 @@ SORULAR = [
 ]
 
 
+def harfi_bul(cevap: str) -> str:
+    """Modelin cevabının içinden A, B veya C harfini çıkarır. Örn. "Cevap: B" -> "B". Bulamazsa boş döner."""
+    eslesme = re.search(r"\b([ABC])\b", cevap.upper())
+    return eslesme.group(1) if eslesme else ""
+
+
 def cevabi_siniflandir(cevap: str, soru: Soru) -> str:
     """Katılımcının cevabının gruba mı uyduğunu, doğruyu mu söylediğini belirler."""
-    cevap = cevap.strip().upper()
-    if cevap == soru.yanlis_cevap:
+    harf = harfi_bul(cevap)
+    if harf == soru.yanlis_cevap:
         return "uydu"
-    if cevap == soru.dogru_cevap:
+    if harf == soru.dogru_cevap:
         return "bagimsiz"
     return "diger"
 
@@ -57,6 +72,7 @@ def deneme_yap(soru: Soru, ortak_sayisi: int, katilimci: DilModeliAjan) -> dict:
     cevap = katilimci.cevap_ver(soru.metin, onceki_cevaplar)
 
     return {
+        "kosul": "kontrol" if ortak_sayisi == 0 else "grup",
         "soru": soru.metin,
         "dogru_cevap": soru.dogru_cevap,
         "grubun_cevabi": soru.yanlis_cevap,
@@ -84,26 +100,41 @@ def sonuclari_kaydet(ayarlar: dict, denemeler: list[dict]) -> Path:
 
 
 if __name__ == "__main__":
-    TEKRAR_SAYISI = 10  # Her soru kaç kez sorulacak
-    ORTAK_SAYISI = 4  # Kaç suç ortağı olacak
+    TEKRAR_SAYISI = 3  # Her soru, her koşulda kaç kez sorulacak
+    ORTAK_SAYILARI = [0, 4]  # 0 = kontrol koşulu, 4 = grup koşulu
+    BEKLEME_SANIYESI = 5  # İki istek arası bekleme (ücretsiz kotayı aşmamak için)
 
-    katilimci = DilModeliAjan("Katilimci", "Sen bir grup deneyine katılan bir kişisin.")
+    katilimci = DilModeliAjan(
+        "Katilimci", "Sen bir grup deneyine katılan bir kişisin.", model=gemini_model
+    )
 
+    toplam = len(SORULAR) * len(ORTAK_SAYILARI) * TEKRAR_SAYISI
     denemeler = []
-    for soru in SORULAR:
-        for _ in range(TEKRAR_SAYISI):
-            denemeler.append(deneme_yap(soru, ORTAK_SAYISI, katilimci))
+    try:
+        for ortak_sayisi in ORTAK_SAYILARI:
+            for soru in SORULAR:
+                for _ in range(TEKRAR_SAYISI):
+                    deneme = deneme_yap(soru, ortak_sayisi, katilimci)
+                    denemeler.append(deneme)
+                    print(f"[{len(denemeler)}/{toplam}] {deneme['kosul']}: {deneme['katilimci_cevabi'].strip()!r} -> {deneme['sonuc']}")
+                    time.sleep(BEKLEME_SANIYESI)
+    except Exception as hata:
+        print(f"\nDeney yarıda kaldı: {hata}")
+        print("O ana kadar toplanan denemeler kaydedilecek.")
 
     ayarlar = {
-        "model": katilimci.model.__name__,
+        "model": os.environ.get("GEMINI_MODEL", katilimci.model.__name__),
         "sistem_promptu": katilimci.sistem_promptu,
-        "ortak_sayisi": ORTAK_SAYISI,
+        "ortak_sayilari": ORTAK_SAYILARI,
         "tekrar_sayisi": TEKRAR_SAYISI,
         "soru_sayisi": len(SORULAR),
     }
     dosya_yolu = sonuclari_kaydet(ayarlar, denemeler)
 
-    uyan = sum(1 for d in denemeler if d["sonuc"] == "uydu")
-    print(f"Toplam deneme: {len(denemeler)}")
-    print(f"Gruba uyma: {uyan} ({uyan / len(denemeler):.0%})")
-    print(f"Sonuçlar kaydedildi: {dosya_yolu}")
+    print()
+    for kosul in ["kontrol", "grup"]:
+        secilenler = [d for d in denemeler if d["kosul"] == kosul]
+        if secilenler:
+            uyan = sum(1 for d in secilenler if d["sonuc"] == "uydu")
+            print(f"{kosul:>8}: {len(secilenler)} denemede {uyan} kez grubun yanlış cevabı ({uyan / len(secilenler):.0%})")
+    print(f"\nSonuçlar kaydedildi: {dosya_yolu}")
