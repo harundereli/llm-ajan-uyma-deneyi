@@ -6,11 +6,18 @@ Katılımcının cevabı üç şekilde sınıflandırılır:
 - "uydu":     grubun yanlış cevabını verdi
 - "bagimsiz": doğru cevabı verdi
 - "diger":    ikisinden de farklı bir cevap verdi
+
+Her çalıştırmanın sonuçları sonuclar/ klasörüne tarih-saat adlı bir JSON dosyası olarak kaydedilir.
 """
 
+import json
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 
 from ajanlar import DilModeliAjan, SabitAjan
+
+SONUC_KLASORU = Path("sonuclar")
 
 
 @dataclass
@@ -59,19 +66,44 @@ def deneme_yap(soru: Soru, ortak_sayisi: int, katilimci: DilModeliAjan) -> dict:
     }
 
 
+def sonuclari_kaydet(ayarlar: dict, denemeler: list[dict]) -> Path:
+    """Deneyin ayarlarını ve bütün denemeleri tek bir JSON dosyasına yazar, dosyanın yolunu döndürür."""
+    SONUC_KLASORU.mkdir(exist_ok=True)
+    zaman = datetime.now()
+    dosya_yolu = SONUC_KLASORU / f"deney_{zaman:%Y-%m-%d_%H-%M-%S}.json"
+
+    kayit = {
+        "tarih": zaman.isoformat(timespec="seconds"),
+        "ayarlar": ayarlar,
+        "denemeler": denemeler,
+    }
+    with open(dosya_yolu, "w", encoding="utf-8") as dosya:
+        json.dump(kayit, dosya, ensure_ascii=False, indent=2)
+
+    return dosya_yolu
+
+
 if __name__ == "__main__":
     TEKRAR_SAYISI = 10  # Her soru kaç kez sorulacak
     ORTAK_SAYISI = 4  # Kaç suç ortağı olacak
 
     katilimci = DilModeliAjan("Katilimci", "Sen bir grup deneyine katılan bir kişisin.")
 
-    sonuclar = []
+    denemeler = []
     for soru in SORULAR:
         for _ in range(TEKRAR_SAYISI):
-            sonuclar.append(deneme_yap(soru, ORTAK_SAYISI, katilimci))
+            denemeler.append(deneme_yap(soru, ORTAK_SAYISI, katilimci))
 
-    uyan = sum(1 for s in sonuclar if s["sonuc"] == "uydu")
-    print(f"Toplam deneme: {len(sonuclar)}")
-    print(f"Gruba uyma: {uyan} ({uyan / len(sonuclar):.0%})")
-    print("İlk denemenin kaydı:", sonuclar[0])
-    
+    ayarlar = {
+        "model": katilimci.model.__name__,
+        "sistem_promptu": katilimci.sistem_promptu,
+        "ortak_sayisi": ORTAK_SAYISI,
+        "tekrar_sayisi": TEKRAR_SAYISI,
+        "soru_sayisi": len(SORULAR),
+    }
+    dosya_yolu = sonuclari_kaydet(ayarlar, denemeler)
+
+    uyan = sum(1 for d in denemeler if d["sonuc"] == "uydu")
+    print(f"Toplam deneme: {len(denemeler)}")
+    print(f"Gruba uyma: {uyan} ({uyan / len(denemeler):.0%})")
+    print(f"Sonuçlar kaydedildi: {dosya_yolu}")
