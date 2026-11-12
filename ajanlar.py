@@ -6,11 +6,22 @@ Asch uyma deneyinde iki tür katılımcı vardır:
 - Gerçek katılımcı: Grubun yanlış cevabını gördükten sonra kendi cevabını verir.
 
 Bu dosyada suç ortakları SabitAjan, gerçek katılımcı ise DilModeliAjan sınıfıyla temsil edilir.
+Katılımcının cevabını üreten "model" değiştirilebilir: geliştirme için sahte_model,
+gerçek deney için gemini_model kullanılır.
 """
 
+import os
 import random
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
+
+from dotenv import load_dotenv
+from google import genai
+from google.genai import errors, types
+
+# .env dosyasındaki GEMINI_API_KEY ve GEMINI_MODEL değerlerini okur.
+load_dotenv()
 
 # Model: sistem promptunu ve mesajı alıp cevabı metin olarak döndüren herhangi bir fonksiyon.
 Model = Callable[[str, str], str]
@@ -19,6 +30,27 @@ Model = Callable[[str, str], str]
 def sahte_model(sistem_promptu: str, kullanici_mesaji: str) -> str:
     """Geliştirme aşamasında gerçek dil modelinin yerine kullanılır; rastgele cevap verir."""
     return random.choice(["A", "B", "C"])
+
+
+def gemini_model(sistem_promptu: str, kullanici_mesaji: str) -> str:
+    """Katılımcının cevabını Google Gemini'ye ürettirir. Kota sınırına takılırsa bekleyip yeniden dener."""
+    istemci = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+
+    for deneme_no in range(1, 4):
+        try:
+            yanit = istemci.models.generate_content(
+                model=os.environ["GEMINI_MODEL"],
+                contents=kullanici_mesaji,
+                config=types.GenerateContentConfig(system_instruction=sistem_promptu),
+            )
+            return yanit.text or ""
+        except errors.APIError as hata:
+            if hata.code not in (429, 503) or deneme_no == 3:
+                raise
+            print(f"Model meşgul ya da kota doldu, 60 saniye bekleniyor... ({deneme_no}/3)")
+            time.sleep(60)
+
+    return ""
 
 
 @dataclass
@@ -53,11 +85,11 @@ class DilModeliAjan:
 
 
 if __name__ == "__main__":
-    # Kısa bir deneme: 4 suç ortağı yanlış cevap (A) verir, ardından katılımcı cevaplar.
+    # Kısa bir deneme: 4 suç ortağı yanlış cevap (A) verir, ardından Gemini katılımcı olarak cevaplar.
     soru = "Referans çizgi 8 cm. Hangisi onunla aynı uzunlukta? A) 5 cm  B) 8 cm  C) 10 cm"
 
     ortaklar = [SabitAjan(f"Ajan_{i}", "A") for i in range(1, 5)]
-    katilimci = DilModeliAjan("Ajan_5", "Sen bir grup deneyine katılan bir kişisin.")
+    katilimci = DilModeliAjan("Ajan_5", "Sen bir grup deneyine katılan bir kişisin.", model=gemini_model)
 
     onceki_cevaplar: list[tuple[str, str]] = []
     for ajan in ortaklar:
@@ -66,4 +98,3 @@ if __name__ == "__main__":
     print(katilimci.mesaj_olustur(soru, onceki_cevaplar))
     print()
     print("Katılımcının cevabı:", katilimci.cevap_ver(soru, onceki_cevaplar))
-    
